@@ -1,0 +1,106 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-frontend:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+    
+    - name: Install dependencies
+      run: |
+        cd frontend
+        npm ci
+    
+    - name: Run tests
+      run: |
+        cd frontend
+        npm test -- --coverage --watchAll=false
+    
+    - name: Build application
+      run: |
+        cd frontend
+        npm run build
+
+  test-ml-service:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Install dependencies
+      run: |
+        cd ml-service
+        pip install -r requirements.txt
+    
+    - name: Health check
+      run: |
+        cd ml-service
+        python app.py &
+        sleep 5
+        curl -f http://localhost:5000/health || exit 1
+
+  build-and-deploy:
+    needs: [test-frontend, test-ml-service]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1
+    
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+    
+    - name: Build and push Docker images
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        ECR_REPOSITORY_FRONTEND: telehealth-frontend
+        ECR_REPOSITORY_BACKEND: telehealth-backend
+        ECR_REPOSITORY_ML: telehealth-ml
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        # Build and push frontend
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY_FRONTEND:$IMAGE_TAG ./frontend
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY_FRONTEND:$IMAGE_TAG
+        
+        # Build and push backend
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY_BACKEND:$IMAGE_TAG ./backend
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY_BACKEND:$IMAGE_TAG
+        
+        # Build and push ML service
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY_ML:$IMAGE_TAG ./ml-service
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY_ML:$IMAGE_TAG
+    
+    - name: Deploy to ECS
+      run: |
+        # Update ECS service with new image
+        aws ecs update-service \
+          --cluster telehealth-cluster \
+          --service telehealth-service \
+          --force-new-deployment

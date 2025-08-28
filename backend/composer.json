@@ -1,0 +1,12 @@
+{
+    "name": "telehealth/api",
+    "description": "Telehealth API Backend",
+    "type": "project",
+    "authors": [
+        {
+            "name": "Developer",
+            "email": "dev@example.com"
+        }
+    ],
+    "require": {}
+}
